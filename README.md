@@ -1,3 +1,81 @@
+public static class CssColorNormalizer
+{
+    public static string NormalizeColor(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return value;
+
+        value = value.Trim().ToLower();
+
+        // ✅ already hex
+        if (Regex.IsMatch(value, @"^#([0-9a-f]{3}|[0-9a-f]{6})$"))
+        {
+            return ExpandHex(value);
+        }
+
+        // ✅ rgb()
+        var rgb = Regex.Match(value, @"rgb\((\d+),\s*(\d+),\s*(\d+)\)");
+        if (rgb.Success)
+        {
+            return ToHex(
+                int.Parse(rgb.Groups[1].Value),
+                int.Parse(rgb.Groups[2].Value),
+                int.Parse(rgb.Groups[3].Value)
+            );
+        }
+
+        // ✅ rgba() → ignore alpha
+        var rgba = Regex.Match(value, @"rgba\((\d+),\s*(\d+),\s*(\d+),\s*[\d\.]+\)");
+        if (rgba.Success)
+        {
+            return ToHex(
+                int.Parse(rgba.Groups[1].Value),
+                int.Parse(rgba.Groups[2].Value),
+                int.Parse(rgba.Groups[3].Value)
+            );
+        }
+
+        // ✅ named colors (基本版)
+        return value switch
+        {
+            "black" => "#000000",
+            "white" => "#ffffff",
+            "red" => "#ff0000",
+            "green" => "#00ff00",
+            "blue" => "#0000ff",
+            "gray" => "#808080",
+            "grey" => "#808080",
+            _ => value
+        };
+    }
+
+    private static string ToHex(int r, int g, int b)
+    {
+        r = Clamp(r);
+        g = Clamp(g);
+        b = Clamp(b);
+
+        return $"#{r:X2}{g:X2}{b:X2}".ToLower();
+    }
+
+    private static int Clamp(int v)
+    {
+        return v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+
+    private static string ExpandHex(string hex)
+    {
+        if (hex.Length == 4)
+        {
+            // #abc → #aabbcc
+            return $"#{hex[1]}{hex[1]}{hex[2]}{hex[2]}{hex[3]}{hex[3]}";
+        }
+
+        return hex;
+    }
+}
+
+
 # memoForWork
 memo
 using System.Text;
