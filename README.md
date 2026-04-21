@@ -1,3 +1,19 @@
+// =========================================================================
+        // ⭐ 步驟 5.5：清道夫！移除空屬性與空區塊 (解決 iText 8 NRE 報錯)
+        // =========================================================================
+        
+        // 1. 移除沒有數值的「空屬性」 (例如: "background-color: ;" 或 "color:   ;")
+        // Regex 解說: 屬性名稱 [\w-]+ 接著冒號，中間可能夾雜空白，最後直接接分號
+        processedCss = Regex.Replace(processedCss, @"[\w-]+\s*:\s*;", string.Empty);
+
+        // 2. 移除沒有意義的「空區塊」 (例如: "*, ::after {  }" 或 ".loader {}")
+        // Regex 解說: 抓取大括號前方不是括號的字元，加上裡面只有空白字元的 { }
+        // 為了安全起見，我們讓它跑個兩次，以防有層層脫落產生的空區塊
+        for (int i = 0; i < 2; i++)
+        {
+            processedCss = Regex.Replace(processedCss, @"[^{}]+\{\s*\}", string.Empty);
+        }
+
 public class CssFlattener
 {
     public static string Process(string rawCss)
