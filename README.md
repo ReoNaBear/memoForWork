@@ -1,3 +1,121 @@
+public class CssFlattener
+{
+    public static string Process(string rawCss)
+    {
+        if (string.IsNullOrWhiteSpace(rawCss)) return rawCss;
+
+        // =========================================================================
+        // 步驟 1：移除不需要的現代 @ 規則 (保留 @page，因為 PDF 可能需要)
+        // =========================================================================
+        // 使用平衡群組 (Balanced Matching) 確保能乾淨移除包含巢狀括號的 @media 區塊
+        string atRulePattern = @"@(?!page)[^{]+\{(?>[^{}]+|(?<DEPTH>)\{|(?<-DEPTH>)\})*(?(DEPTH)(?!))\}";
+        string processedCss = Regex.Replace(rawCss, atRulePattern, string.Empty);
+
+        // =========================================================================
+        // 步驟 2：精準抓取所有變數宣告 (無論在哪個區塊)
+        // =========================================================================
+        var varMap = new Dictionary<string, string>();
+        
+        // 抓取格式: --變數名: 數值; (或結尾遇到 })
+        var defineRegex = new Regex(@"(?<name>--[\w-]+)\s*:\s*(?<value>[^;{}]+)(?:;|(?=\}))");
+
+        foreach (Match m in defineRegex.Matches(processedCss))
+        {
+            string name = m.Groups["name"].Value.Trim();
+            string value = m.Groups["value"].Value.Trim();
+            
+            // 存入字典。如果有多個重複定義，這裡會以後面出現的為主 (符合 CSS 覆寫特性)
+            varMap[name] = value; 
+        }
+
+        // =========================================================================
+        // 步驟 3：剝洋蔥！處理字典內部的變數相依性 (例如 --a: var(--b, 1);)
+        // =========================================================================
+        bool changed = true;
+        int maxLoops = 10; // 防呆機制，避免變數互相參考導致死迴圈
+        
+        // 支援抓取 fallback 預設值的強大 Regex (利用平衡群組處理 rgba 內的括號)
+        var replaceVarRegex = new Regex(@"var\(\s*(?<name>--[\w-]+)(?:\s*,\s*(?<fallback>(?>[^()]+|\((?<DEPTH>)|\)(?<-DEPTH>))*(?(DEPTH)(?!))))?\)");
+
+        while (changed && maxLoops > 0)
+        {
+            changed = false;
+            foreach (var key in varMap.Keys.ToList())
+            {
+                if (varMap[key].Contains("var("))
+                {
+                    string resolvedValue = replaceVarRegex.Replace(varMap[key], m =>
+                    {
+                        string targetVar = m.Groups["name"].Value.Trim();
+                        string fallbackVar = m.Groups["fallback"].Success ? m.Groups["fallback"].Value.Trim() : null;
+
+                        // 1. 字典裡有解答，換進去
+                        if (varMap.ContainsKey(targetVar)) return varMap[targetVar];
+                        // 2. 找不到解答，但有預設值 fallback
+                        if (!string.IsNullOrEmpty(fallbackVar)) return fallbackVar;
+                        // 3. 都沒有，先保留原狀交給下一圈或最終替換處理
+                        return m.Value; 
+                    });
+
+                    // 如果替換後的值有改變，更新字典並標記 changed，讓下一圈繼續檢查
+                    if (varMap[key] != resolvedValue)
+                    {
+                        varMap[key] = resolvedValue;
+                        changed = true;
+                    }
+                }
+            }
+            maxLoops--;
+        }
+
+        // =========================================================================
+        // 步驟 4：從 CSS 中徹底刪除變數「定義列」
+        // (保護正常的屬性如 box-sizing 安全留在原處，避免 iText 解析錯誤)
+        // =========================================================================
+        processedCss = defineRegex.Replace(processedCss, string.Empty);
+
+        // =========================================================================
+        // 步驟 5：將剩下的 CSS 裡的 var() 替換為實際數值 (遞迴清洗)
+        // =========================================================================
+        changed = true;
+        maxLoops = 10;
+        
+        while (changed && maxLoops > 0)
+        {
+            string nextCss = replaceVarRegex.Replace(processedCss, m =>
+            {
+                string targetVar = m.Groups["name"].Value.Trim();
+                string fallbackVar = m.Groups["fallback"].Success ? m.Groups["fallback"].Value.Trim() : null;
+
+                if (varMap.ContainsKey(targetVar)) return varMap[targetVar];
+                if (!string.IsNullOrEmpty(fallbackVar)) return fallbackVar;
+                
+                // 找不到時的終極保底，避免 iText 8 噴出 Object Reference 錯誤
+                return "inherit"; 
+            });
+
+            changed = (nextCss != processedCss);
+            processedCss = nextCss;
+            maxLoops--;
+        }
+
+        // 終極保底殺手：萬一有極度畸形的 var() 躲過了上面的 Regex，全部暴力清掉
+        processedCss = Regex.Replace(processedCss, @"var\([^)]+\)", "inherit");
+
+        // =========================================================================
+        // 步驟 6：加上 PDF 強制保底樣式
+        // =========================================================================
+        string pdfFallbackCss = @"
+            table { border-collapse: collapse !important; width: 100% !important; }
+            td, th { border: 0.5pt solid black !important; padding: 4px; }
+        ";
+
+        return processedCss + pdfFallbackCss;
+    }
+}
+
+
+
 // Regex 解說：
 // var\(\s* : 匹配 var( 以及可能的前導空白
 // (?<name>--[\w-]+)        : 抓取變數名稱
