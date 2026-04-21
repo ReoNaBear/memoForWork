@@ -1,3 +1,22 @@
+
+
+processedCss = Regex.Replace(processedCss, @"[\w-]+\s*:\s*[^;{}]+(?:;|(?=\}))", m =>
+        {
+            // 如果這行屬性設定裡面含有 "calc(" 字眼...
+            if (m.Value.Contains("calc("))
+            {
+                return string.Empty; // 毫不留情，整行刪除！
+            }
+            
+            // 如果沒有 calc，就安全放行
+            return m.Value; 
+        });
+
+
+
+
+
+
 // Regex 解說：
 // [\w-]+           : 匹配屬性名稱 (如 width, min-height)
         // \s*:\s* : 匹配冒號
