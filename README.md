@@ -1,3 +1,147 @@
+public class CssFlattener
+{
+    public static string Process(string rawCss)
+    {
+        if (string.IsNullOrWhiteSpace(rawCss)) return rawCss;
+
+        // =========================================================================
+        // 步驟 1：移除不需要的現代 @ 規則 (如 @media, @keyframes, @supports)
+        // =========================================================================
+        // Regex 解說：
+        // @(?!page)   : 匹配 @ 開頭，但排除 @page (因為 PDF 轉換可能需要 @page 設定邊距)
+        // [^{]+       : 匹配 @ 之後直到第一個 { 之間的所有字元 (例如 media print)
+        // \{          : 匹配開頭的 {
+        // (?>...)* : 這是 C# 特有的「平衡群組 (Balanced Matching)」，用來處理巢狀大括號 { { } }
+        // (?(DEPTH)(?!)): 確保括號完全對稱閉合
+        string atRulePattern = @"@(?!page)[^{]+\{(?>[^{}]+|(?<DEPTH>)\{|(?<-DEPTH>)\})*(?(DEPTH)(?!))\}";
+        string processedCss = Regex.Replace(rawCss, atRulePattern, string.Empty);
+
+        // =========================================================================
+        // 步驟 2：將 CSS 拆分為獨立的 選擇器 { 內容 } 區塊
+        // =========================================================================
+        // Regex 解說：
+        // (?<selector>[^{}]+) : 命名群組 selector，抓取 { 之前所有不是括號的字元
+        // \{                  : 匹配 {
+        // (?<content>[^{}]+)  : 命名群組 content，抓取 } 之前所有不是括號的內容
+        // \}                  : 匹配 }
+        var blockRegex = new Regex(@"(?<selector>[^{}]+)\{(?<content>[^{}]+)\}");
+        var matches = blockRegex.Matches(processedCss);
+
+        string resetContent = "";
+        List<string> otherBlocks = new List<string>();
+
+        foreach (Match m in matches)
+        {
+            string selector = m.Groups["selector"].Value.Trim();
+            string content = m.Groups["content"].Value.Trim();
+
+            // 判斷是否為全域變數宣告區塊 (*, :root, :before, :after 等)
+            if (selector.Contains("*") || selector.Contains(":root") || selector.Contains(":before") || selector.Contains(":after"))
+            {
+                resetContent += content + ";"; // 累加變數定義
+            }
+            else
+            {
+                otherBlocks.Add($"{selector} {{{content}}}"); // 其他正常樣式先存起來
+            }
+        }
+
+        // =========================================================================
+        // 步驟 3：解析變數，並存入 Dictionary
+        // =========================================================================
+        var varMap = new Dictionary<string, string>();
+        
+        // Regex 解說：
+        // (?<name>--[\w-]+) : 抓取以 -- 開頭的變數名稱，如 --tw-bg-opacity
+        // \s*:\s* : 匹配中間的冒號與可能的空白
+        // (?<value>[^;]+)   : 抓取分號前所有的字元作為變數值
+        var varRegex = new Regex(@"(?<name>--[\w-]+)\s*:\s*(?<value>[^;]+)");
+        
+        foreach (Match m in varRegex.Matches(resetContent))
+        {
+            string name = m.Groups["name"].Value.Trim();
+            string value = m.Groups["value"].Value.Trim();
+            varMap[name] = value;
+        }
+
+        // =========================================================================
+        // 步驟 3.5：處理變數相依性 (例如 --a: var(--b);)
+        // =========================================================================
+        bool changed = true;
+        int loopCount = 0;
+        int maxLoops = 5; // 設定最大迴圈次數，防止無限遞迴當機
+        
+        // 解析 var() 的 Regex
+        var replaceVarRegex = new Regex(@"var\((?<name>--[\w-]+)\)");
+
+        while (changed && loopCount < maxLoops)
+        {
+            changed = false;
+            foreach (var key in varMap.Keys.ToList())
+            {
+                if (varMap[key].Contains("var("))
+                {
+                    // 把變數值裡面的 var() 替換成 Dictionary 裡已知的純數值
+                    string resolvedValue = replaceVarRegex.Replace(varMap[key], m =>
+                    {
+                        string targetVar = m.Groups["name"].Value;
+                        return varMap.ContainsKey(targetVar) ? varMap[targetVar] : m.Value;
+                    });
+
+                    if (varMap[key] != resolvedValue)
+                    {
+                        varMap[key] = resolvedValue;
+                        changed = true;
+                    }
+                }
+            }
+            loopCount++;
+        }
+
+        // =========================================================================
+        // 步驟 4：遍歷其他樣式區塊，執行 var() 替換
+        // =========================================================================
+        List<string> finalCssBlocks = new List<string>();
+
+        foreach (var block in otherBlocks)
+        {
+            // 將 block 裡面的 var(--xxx) 替換掉
+            string updatedBlock = replaceVarRegex.Replace(block, m =>
+            {
+                string targetVar = m.Groups["name"].Value;
+                
+                if (varMap.ContainsKey(targetVar))
+                {
+                    // 去除可能因為相依性遺留下來的多餘變數結構，並防呆處理 null
+                    return varMap[targetVar].Replace("var(", "").Replace(")", "").Trim(); 
+                }
+                
+                // 如果 Dictionary 裡找不到，為了避免 iText 8 報錯，回傳 inherit 或 transparent
+                return "inherit"; 
+            });
+
+            // 移除可能殘留的 --自定義屬性列 (不讓 iText 讀到它們)
+            updatedBlock = Regex.Replace(updatedBlock, @"--[\w-]+:[^;]+;", string.Empty);
+
+            finalCssBlocks.Add(updatedBlock);
+        }
+
+        // =========================================================================
+        // 步驟 5：組合最終 CSS，並加上 PDF 強制保底樣式
+        // =========================================================================
+        string resultCss = string.Join("\n", finalCssBlocks);
+
+        string pdfFallbackCss = @"
+            table { border-collapse: collapse !important; width: 100% !important; }
+            td, th { border: 0.5pt solid black !important; padding: 4px; }
+        ";
+
+        return resultCss + pdfFallbackCss;
+    }
+}
+
+/saasdadsa
+
 public static class CssColorNormalizer
 {
     public static string NormalizeColor(string value)
