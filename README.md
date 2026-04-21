@@ -1,3 +1,33 @@
+// Regex 解說：
+// var\(\s* : 匹配 var( 以及可能的前導空白
+// (?<name>--[\w-]+)        : 抓取變數名稱
+// (?:\s*,\s* : (可選區塊開始) 匹配逗號，代表有備用值
+// (?<fallback>(?>[^()]+|\((?<DEPTH>)|\)(?<-DEPTH>))*(?(DEPTH)(?!))) : 完美抓取逗號後面所有的備用值，即使裡面有 rgba() 也不會出錯！
+// )?                       : (可選區塊結束)
+// \)                       : 匹配最後的 )
+var replaceVarRegex = new Regex(@"var\(\s*(?<name>--[\w-]+)(?:\s*,\s*(?<fallback>(?>[^()]+|\((?<DEPTH>)|\)(?<-DEPTH>))*(?(DEPTH)(?!))))?\)");
+
+processedCss = replaceVarRegex.Replace(processedCss, m =>
+{
+    string targetVar = m.Groups["name"].Value;
+    string fallbackVar = m.Groups["fallback"].Success ? m.Groups["fallback"].Value.Trim() : null;
+
+    // 情況 A：如果字典裡有這個變數，直接用字典裡的值
+    if (varMap.ContainsKey(targetVar))
+    {
+        return varMap[targetVar].Replace("var(", "").Replace(")", "").Trim();
+    }
+    
+    // 情況 B：字典裡找不到，但 CSS 有提供預設值 (fallback)
+    if (!string.IsNullOrEmpty(fallbackVar))
+    {
+        return fallbackVar; // 完美退路：使用前端設定的預設值 (例如 1 或 #000)
+    }
+
+    // 情況 C：什麼都沒有，給一個保底值避免 iText 崩潰
+    return "inherit"; 
+});
+
 public class CssFlattener
 {
     public static string Process(string rawCss)
