@@ -5,6 +5,102 @@ public class CssFlattener
         if (string.IsNullOrWhiteSpace(rawCss)) return rawCss;
 
         // =========================================================================
+        // 步驟 1：移除不需要的現代 @ 規則 (保留 @page)
+        // =========================================================================
+        string atRulePattern = @"@(?!page)[^{]+\{(?>[^{}]+|(?<DEPTH>)\{|(?<-DEPTH>)\})*(?(DEPTH)(?!))\}";
+        string processedCss = Regex.Replace(rawCss, atRulePattern, string.Empty);
+
+        // =========================================================================
+        // 步驟 2：精準抓取所有變數宣告 (不管它在哪個區塊)
+        // =========================================================================
+        var varMap = new Dictionary<string, string>();
+        
+        // Regex 解說：
+        // (?<name>--[\w-]+)  : 抓取 --開頭的變數名
+        // \s*:\s* : 匹配冒號與空白
+        // (?<value>[^;{}]+)  : 抓取值，直到遇到分號 ; 或大括號 } 為止
+        // (?:;|(?=\}))       : 結尾必須是分號，或者是 } (對應 CSS 最後一行可能沒寫分號的情況)
+        var defineRegex = new Regex(@"(?<name>--[\w-]+)\s*:\s*(?<value>[^;{}]+)(?:;|(?=\}))");
+
+        foreach (Match m in defineRegex.Matches(processedCss))
+        {
+            string name = m.Groups["name"].Value.Trim();
+            string value = m.Groups["value"].Value.Trim();
+            varMap[name] = value; // 存入字典
+        }
+
+        // =========================================================================
+        // 步驟 3：處理變數相依性 (例如 --a: var(--b);)
+        // =========================================================================
+        bool changed = true;
+        int loopCount = 0;
+        var replaceVarRegex = new Regex(@"var\((?<name>--[\w-]+)\)");
+
+        while (changed && loopCount < 5)
+        {
+            changed = false;
+            foreach (var key in varMap.Keys.ToList())
+            {
+                if (varMap[key].Contains("var("))
+                {
+                    string resolvedValue = replaceVarRegex.Replace(varMap[key], m =>
+                    {
+                        string targetVar = m.Groups["name"].Value;
+                        return varMap.ContainsKey(targetVar) ? varMap[targetVar] : m.Value;
+                    });
+
+                    if (varMap[key] != resolvedValue)
+                    {
+                        varMap[key] = resolvedValue;
+                        changed = true;
+                    }
+                }
+            }
+            loopCount++;
+        }
+
+        // =========================================================================
+        // 步驟 4：將原始 CSS 裡的變數宣告「徹底刪除」
+        // (這樣 * {} 裡面的正常變數如 box-sizing 就會完美保留下來)
+        // =========================================================================
+        processedCss = defineRegex.Replace(processedCss, string.Empty);
+
+        // =========================================================================
+        // 步驟 5：將剩下的 CSS 裡的 var(--xxx) 替換為實際數值
+        // =========================================================================
+        processedCss = replaceVarRegex.Replace(processedCss, m =>
+        {
+            string targetVar = m.Groups["name"].Value;
+            if (varMap.ContainsKey(targetVar))
+            {
+                return varMap[targetVar].Replace("var(", "").Replace(")", "").Trim();
+            }
+            return "inherit"; // 找不到時的保底防呆
+        });
+
+        // =========================================================================
+        // 步驟 6：加上 PDF 強制保底樣式
+        // =========================================================================
+        string pdfFallbackCss = @"
+            table { border-collapse: collapse !important; width: 100% !important; }
+            td, th { border: 0.5pt solid black !important; padding: 4px; }
+        ";
+
+        return processedCss + pdfFallbackCss;
+    }
+}
+
+.......
+
+
+
+public class CssFlattener
+{
+    public static string Process(string rawCss)
+    {
+        if (string.IsNullOrWhiteSpace(rawCss)) return rawCss;
+
+        // =========================================================================
         // 步驟 1：移除不需要的現代 @ 規則 (如 @media, @keyframes, @supports)
         // =========================================================================
         // Regex 解說：
